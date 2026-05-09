@@ -42,16 +42,16 @@ function evaluateHandshake(ip) {
     if (state.presets && state.sourceProviders && state.bmx) {
         console.log(`[Bose Cloud] 🎉 STATUS: Good. Routing fully working`);
     } else if (state.bmx && !state.sourceProviders) {
-        console.log(`[Bose Cloud] ❌ STATUS: ncomplete Routing`);
+        console.log(`[Bose Cloud] ❌ STATUS: Incomplete Routing`);
         console.log(`  -> The speaker accepted the BMX route but completely ignored Marge (Presets).`);
-        console.log(`  -> CAUSE????: The 'APP_IP' in .env is wrong, OR the speaker's NVRAM is locked.`);
-        console.log(`  -> FIX????: Verify Static IPs, use "Remove Emulation", reboot, and Inject again.`);
+        console.log(`  -> CAUSE?: The 'APP_IP' in .env is wrong, OR the speaker's NVRAM is locked.`);
+        console.log(`  -> FIX?: Verify Static IPs, use "Remove Emulation", reboot, and Inject again.`);
     } else if (state.powerOn && !state.bmx && !state.sourceProviders) {
         console.log(`[Bose Cloud] ❌ STATUS: Total Routing Fail`);
         console.log(`  -> The speaker booted up but did not ask the server for anything.`);
-        console.log(`  -> CAUSE????: Firewall blocking Port ${PORT} or bad IP.`);
+        console.log(`  -> CAUSE?: Firewall blocking Port ${PORT} or bad IP.`);
     } else {
-        console.log(`[Bose Cloud] ⚠️ STATUS: INCOMPLETE HANDSHAKE. Check??? Hm???  network stability???.`);
+        console.log(`[Bose Cloud] ⚠️ STATUS: INCOMPLETE HANDSHAKE. Check network stability?.`);
     }
     console.log(`=======================================================================\n`);
     
@@ -248,18 +248,15 @@ router.post('/streaming/support/power_on', (req, res) => {
             const npData = await parser.parseStringPromise(npRes.data);
             const setupData = await parser.parseStringPromise(setupRes.data);
             
-			// 1. Sanitize the Marge ID Check (Force pseudo-empty values to null)
-            let margeId = infoData?.info?.margeAccountUUID;
-            
-            if (
-                margeId === undefined || 
-                (typeof margeId === 'string' && margeId.trim() === '') || 
-                (typeof margeId === 'object' && Object.keys(margeId).length === 0)
-            ) {
-                margeId = null; 
-            }
-            
-            const isBlank = (margeId === null);
+			// 1. Sanitize the Marge ID Check (Strict Numeric Only)
+let margeId = infoData?.info?.margeAccountUUID;
+
+// Reject if it contains ANY non-numeric characters (handles spaces, objects, and undefined automatically)
+if (!/^\d+$/.test(String(margeId).trim())) {
+    margeId = null; 
+}
+
+const isBlank = (margeId === null);
             
             // 2. Check System States Safely
             const npSource = npData?.nowPlaying?.['$']?.source || 'UNKNOWN';
