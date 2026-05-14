@@ -5,7 +5,9 @@ Unfortunately, I will be on vacation for 2 weeks (May 9th-26) with very limited 
 # ***ALSO Another Note: 
 Unless you are part of debugging efforts for your issue #20 or you are new and get issue #20 please make sure u do Not change your docker yml from v3.  (do not put in latest, or v3.1 or v3.2 or v3.3) these are debug version used to research issues)***
 
-***if u have issue 20 scroll through the issyevthread for the tenp solution to the issue written up by others with sane issue***
+***if u have issue 20 scroll through the issue thread #20 for the tenp solution to the issue written up by others with sane issue***
+
+
 ***Ill implement permanent fix when I return.  thx***
 
 ***The latest debug logging version is v3.3***
