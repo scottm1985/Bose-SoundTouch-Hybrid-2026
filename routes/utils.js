@@ -54,12 +54,11 @@ function getPresetAssignment(ip, slotId) {
     return match || null;
 }
 // --- TEXT SANITIZER ---
-// Detects common encoding errors (like the replacement character) and fixes them.
+// Safely replaces broken Bose encoding diamonds with an 'a' to preserve word structure.
+// Music Assistant will instantly overwrite this with the perfect UTF-8 accents anyway!
 function scrubText(str) {
-    if (!str)
-        return "";
-    // Replaces broken diamond symbol with correct accented 'á'
-    return str.replace(/[\ufffd]/g, 'á').normalize('NFC');
+    if (!str) return "";
+    return str.replace(/[\ufffd]/g, 'a').normalize('NFC');
 }
 
 module.exports = {
@@ -69,3 +68,4 @@ module.exports = {
     parseIp,
     scrubText 
 };
+ 

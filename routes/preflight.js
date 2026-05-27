@@ -1,0 +1,253 @@
+// routes/preflight.js
+const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+const xml2js = require('xml2js');
+const net = require('net');
+
+// 1. THE NATIVE INJECTOR (Universal Timing Sequence)
+function injectPort17000Commands(ip, commands) {
+    return new Promise((resolve) => {
+        const client = new net.Socket();
+        client.setTimeout(20000); 
+        
+        client.on('error', (err) => {
+            console.log(`   ├─ ❌ Port 17000 Error: ${err.message}`);
+            resolve(false);
+        });
+        
+        client.on('timeout', () => { 
+            console.log(`   ├─ ⚠️ Port 17000 Connection Timed Out.`);
+            client.destroy(); 
+            resolve(true); 
+        });
+        
+        client.connect(17000, ip, async () => {
+            console.log(`   ├─ 🔌 Port 17000 connected. Initiating universal timing sequence...`);
+            
+            // Bypass lazy-load bug with wake-up carriage returns
+            client.write('\r\n');
+            await new Promise(r => setTimeout(r, 500));
+            client.write('sys configuration\r\n');
+            await new Promise(r => setTimeout(r, 500));
+
+			// Sequential injection with universal NVRAM delays
+            for (let i = 0; i < commands.length; i++) {
+                let cmdLog = commands[i].split(' ')[1] || 'command';
+                
+                // Extract the actual values for the console log
+                if (cmdLog === 'AccountId') {
+                    cmdLog = `AccountId -> ${commands[i].split(' ')[3]}`;
+                } else if (cmdLog === 'configuration') {
+                    cmdLog = `${commands[i].split(' ')[2]}`; 
+                } else if (cmdLog === 'boseurls') {
+                    cmdLog = `boseurls`;
+                }
+
+                console.log(`   ├─ ⚙️  [${i+1}/${commands.length}] Injecting: ${cmdLog}`);
+                client.write(commands[i] + '\r\n');
+                await new Promise(r => setTimeout(r, 1000)); // Crucial 1000ms universal delay
+            }
+            
+            client.destroy();
+            resolve(true);
+        });
+    });
+}
+
+// THE NATIVE TELNET JANITOR (Upgraded with Error Trapping)
+function telnetJanitor(ip) {
+    return new Promise((resolve) => {
+        const client = new net.Socket();
+        client.setTimeout(2000); // Give up fast if port 23 is closed
+        let shellOutput = "";
+
+        client.on('error', () => resolve(false));
+        client.on('timeout', () => { client.destroy(); resolve(false); });
+
+        // Capture shell data to trap errors
+        client.on('data', (data) => {
+            shellOutput += data.toString();
+        });
+
+        client.connect(23, ip, () => {
+            console.log(`   ├─ 🚨 [Janitor] PORT 23 (TELNET) IS OPEN! USB Drive detected.`);
+            console.log(`   ├─ [Janitor] Logging in as root...`);
+
+            setTimeout(() => {
+                client.write('root\r\n');
+
+                setTimeout(() => {
+                    console.log(`   ├─ [Janitor] 🧹 Deleting legacy V1/V2 OverrideSdkPrivateCfg.xml...`);
+                    // Use -v for verbose output to catch success
+                    client.write('rm -fv /var/lib/Bose/PersistenceDataRoot/OverrideSdkPrivateCfg.xml\r\nsync\r\n');
+
+                    setTimeout(() => {
+                        // Error trapping based on shell response
+                        if (shellOutput.includes('No such file')) {
+                            console.log(`   ├─ ⚠️ [Janitor] Notice: File was already gone or path is incorrect.`);
+                        } else if (shellOutput.toLowerCase().includes('error')) {
+                            console.log(`   ├─ ❌ [Janitor] Error wiping file! Check shell output.`);
+                        } else {
+                            console.log(`   ├─ [Janitor] ✅ File successfully deleted from memory.`);
+                        }
+
+                        console.log(`   ├─ [Janitor] Rebooting to clear memory...`);
+                        client.write('reboot\r\n');
+
+                        setTimeout(() => {
+                            client.destroy();
+                            resolve(true); 
+                        }, 500);
+                    }, 2000); 
+                }, 1000); 
+            }, 500); 
+        });
+    });
+}
+
+
+// LEGACY USB WARNING BANNER
+function showLegacyUSBWarning(ip) {
+    console.log(`\n=======================================================================`);
+    console.log(`🚨 LEGACY V1/V2 CONFIGURATION DETECTED ON ${ip}!`);
+    console.log(`   The speaker is refusing the V3 update because an old USB HiJack file`);
+    console.log(`   is overriding the internal memory.`);
+    console.log(` `);
+    console.log(`   TO FIX THIS AUTOMATICALLY:`);
+    console.log(`   1. Plug your "remote_services" USB setup cable into the speaker.`);
+    console.log(`   2. Reboot the speaker (unplug power, wait 10s, plug back in).`);
+    console.log(`   3. Wait 1 minute for it to connect to Wi-Fi.`);
+    console.log(`   4. Click "Restart SoundTouch Hybrid" in the System Tools menu.`);
+    console.log(` `);
+    console.log(`   The Telnet Janitor will detect the USB, safely wipe the file,`);
+    console.log(`   reboot the speaker, and complete the V3 upgrade automatically!`);
+    console.log(`=======================================================================\n`);
+}
+
+// PAUSE PREFLIGHT WHILE JANITOR REBOOTS SPEAKER
+async function waitForJanitorReboot(ip) {
+    let online = false, attempts = 0;
+    process.stdout.write(`   ├─ ⏳ Waiting for ${ip} to reboot from Janitor wipe `);
+    while (!online && attempts < 24) {
+        try {
+            await axios.get(`http://${ip}:8090/info`, { timeout: 2000 });
+            online = true;
+            console.log(` ✅ Back Online!`);
+        } catch(e) {
+            attempts++;
+            process.stdout.write('.');
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
+    return online;
+}
+
+async function runSetup(forceMode = false, targetIp = 'all') {
+    const configPath = path.join(__dirname, '..', 'config', 'speakers.json');
+    if (!fs.existsSync(configPath)) {
+        console.error("[Pre-Flight] speakers.json not found!");
+        return { success: false, rebootedIps: [] };
+    }
+
+    const SPEAKERS = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const APP_IP = process.env.APP_IP;
+    const APP_PORT = process.env.APP_PORT;
+    const parser = new xml2js.Parser({ explicitArray: false });
+    const rebootedIps = [];
+
+    // Safely extract string data from xml2js objects
+    const extractString = (val) => {
+        if (!val) return "";
+        if (typeof val === 'string') return val;
+        if (val._) return String(val._);
+        return String(val);
+    };
+
+    for (const speaker of SPEAKERS) {	
+        console.log(`[Pre-Flight] 🔍 Checking ${speaker.name} (${speaker.ip})...`);
+        
+        try {
+            // 1. RUN TELNET JANITOR FIRST
+            const justCleaned = await telnetJanitor(speaker.ip);
+            if (justCleaned) {
+                // If it cleaned it, the speaker is rebooting. We must wait!
+                const isBack = await waitForJanitorReboot(speaker.ip);
+                if (!isBack) {
+                    console.log(`   └─ ⚠️ Timed out waiting for speaker. Moving on.`);
+                    continue;
+                }
+                console.log(`   ├─ ✨ Speaker is clean. Proceeding with standard V3 Setup...`);
+            }
+
+			const res = await axios.get(`http://${speaker.ip}:8090/info`, { timeout: 2000 });
+            const data = await parser.parseStringPromise(res.data);
+            const info = data.info || {};
+            
+            // FIX 1: Extract from the deviceID attribute directly, fallback to a random 7-digit number
+            const fallbackId = Math.floor(Math.random() * 10000000).toString();
+            const macAddress = extractString(info.$ && info.$.deviceID) || fallbackId;          
+            const currentMargeUrl = extractString(info.margeURL || info.margeServerUrl);
+            const currentMargeId = extractString(info.margeAccountUUID);
+			
+			// FIX 2: Invalid list forces reconfiguration (Checks BOTH IP and Port)
+            const isUrlConfigured = currentMargeUrl.includes(`${APP_IP}:${APP_PORT}`);
+            const hasMargeId = currentMargeId !== "" && currentMargeId !== "0000000" && currentMargeId !== "UNKNOWN_MAC";
+
+            // --- FORCE INJECTION LOGIC ---
+            const naturallyNeedsSetup = !isUrlConfigured || !hasMargeId;
+            const isForceTarget = forceMode && (targetIp === 'all' || targetIp === speaker.ip);
+
+            // If healthy AND not forced, skip it safely.
+            if (!naturallyNeedsSetup && !isForceTarget) {
+                console.log(`[Pre-Flight] ✅ ${speaker.name} is already fully configured (MargeID: ${currentMargeId}).`);
+                continue; 
+            }
+
+            // Otherwise, injecting. Explain exactly why:
+            if (naturallyNeedsSetup) {
+                console.log(`[Pre-Flight] ⚠️ ${speaker.name} requires setup.`);
+                if (!hasMargeId) console.log(`   ├─ Reason: Missing or invalid MargeID.`);
+                if (!isUrlConfigured) console.log(`   ├─ Reason: Cloud URL mismatch (Found: "${currentMargeUrl}").`);
+            } else if (isForceTarget) {
+                console.log(`[Pre-Flight] 🚨 FORCE MODE ENABLED: Bypassing checks. Hybrid Setup Injecting ${speaker.name}...`);
+            }
+            // --- END FORCE INJECTION LOGIC ---
+
+			console.log(`   ├─ Initiating NVRAM Injection sequence via Port 17000...`);
+
+            const targetMargeId = hasMargeId ? currentMargeId : macAddress;
+			// log too display MargeId
+            console.log(`   ├─ 🎯 Target MargeID: ${targetMargeId}`);
+            const commandList = [];
+
+            if (!hasMargeId) {
+                commandList.push(`envswitch AccountId set ${targetMargeId}`);
+            }
+
+            // Stack all the configuration commands into an array
+            commandList.push(`sys configuration bmxRegistryUrl http://${APP_IP}:${APP_PORT}/bmx/registry/v1/services`);
+            commandList.push(`sys configuration statsServerUrl http://${APP_IP}:${APP_PORT}`);
+            commandList.push(`sys configuration margeServerUrl http://${APP_IP}:${APP_PORT}/marge`);
+            commandList.push(`sys configuration swUpdateUrl http://${APP_IP}:${APP_PORT}/updates/soundtouch`);
+            commandList.push(`envswitch boseurls set http://${APP_IP}:${APP_PORT} http://${APP_IP}:${APP_PORT}/updates/soundtouch`);
+            commandList.push(`sys remote_service on`);
+
+			console.log(`   ├─ ✍️  Writing configurations sequentially (this takes a few seconds)...`);
+            await injectPort17000Commands(speaker.ip, commandList);
+
+            console.log(`   ├─ ⏳ Waiting 10 seconds for NVRAM to safely write to flash memory...`);
+            await new Promise(resolve => setTimeout(resolve, 10000));
+
+            console.log(`   └─ 🧠 Save complete. Rebooting ${speaker.name}...`);
+            await injectPort17000Commands(speaker.ip, [`sys reboot`]);
+            rebootedIps.push(speaker.ip);
+
+        } catch (err) {
+            console.log(`[Pre-Flight] ❌ Could not reach ${speaker.ip}: ${err.message}`);
+        }
+    }
+    return { success: true, rebootedIps };
+}
+
+module.exports = { runSetup }; 

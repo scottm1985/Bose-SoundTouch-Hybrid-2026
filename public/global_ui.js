@@ -205,4 +205,4 @@ window.triggerGlobalAllOff = async function() {
     } finally {
         btns.forEach(b => b.style.opacity = '1');
     }
-};
+}; 

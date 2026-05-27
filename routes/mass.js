@@ -551,3 +551,4 @@ async function executeCommand(target, command, options = {}) {
 // SECTION 7: EXPORTS
 // =======================================================================
 module.exports = {play,playMedia,stop,next,previous,pause,clearQueue,getRawMetadata,getMetadata,getToken,BASE_URL,setPresetMemory,getPresetMemory,isRecovering,getHealth,resetHealth};
+ 

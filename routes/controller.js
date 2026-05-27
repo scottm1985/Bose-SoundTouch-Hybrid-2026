@@ -5,7 +5,6 @@ const xml2js = require('xml2js');
 const mass = require('./mass');
 const utils = require('./utils');
 const deviceState = require('../device_state');
-const WLA_PRESET_BYPASS = process.env.WLA_PRESET_BYPASS === 'true';
 
 // --- CONFIGURATION ---
 const BOSE_HEADERS = { headers: { 'Content-Type': 'application/xml' } };
@@ -44,10 +43,10 @@ async function handleMassTransport(ip, key, currentState) {
         deviceState.setExpectation(ip, 'PLAY_STATUS', targetState);
         
         if (isActuallyPlaying) {
-            console.log(`[Control] Hardware is Playing. Sending explicit PAUSE.`);
+            console.log(`[Control] Speaker is Playing. Sending explicit PAUSE.`);
             await mass.pause(ip);
         } else {
-            console.log(`[Control] Hardware is Silent. Sending explicit RESUME/PLAY.`);
+            console.log(`[Control] Speaker is Silent. Sending explicit RESUME/PLAY.`);
             await mass.play(ip);
         }
     }
@@ -86,8 +85,11 @@ async function handlePowerLogic(ip, currentState) {
             });
         }
         
-        // 2. Stop Music Assistant before the speaker goes offline
-        if (currentState.massIsActiveDriver) mass.stop(ip, "Manual Power OFF");
+		// 2. The 1-2 Punch: Stop active stream, then clear the queue to prevent DLNA ghost-resumes
+        if (currentState.massIsActiveDriver) {
+            mass.stop(ip, "Manual Power OFF");
+            mass.clearQueue(ip);
+        }
         
         // 3. Clear the green preset highlight
         mass.setPresetMemory(ip, 0);
@@ -202,24 +204,8 @@ router.post('/key', async(req, res) => {
         return res.send({ success: true });
     }
 
-    if (key.startsWith('PRESET_')) {
+	if (key.startsWith('PRESET_')) {
         const presetNum = parseInt(key.split('_')[1]);
-        const isLink = currentState.type && currentState.type.toLowerCase().includes('link');
-
-        if (isLink && WLA_PRESET_BYPASS) {
-            const match = utils.getPresetAssignment(ip, presetNum);
-            if (match && match.uri) {
-                mass.setPresetMemory(ip, presetNum);
-                deviceState.setExpectation(ip, 'PRESET', presetNum, '');
-                await mass.playMedia(ip, match);
-                return res.send({ success: true });
-            }
-        }
-
-        if (isLink) {
-            const success = await handlePresetSelection(ip, presetNum, currentState);
-            if (success) return res.send({ success: true });
-        }
 
         mass.setPresetMemory(ip, presetNum);
         deviceState.setExpectation(ip, 'PRESET', presetNum, '');
@@ -400,4 +386,4 @@ router.post('/zone_volume', async(req, res) => {
 router.get('/health', (req, res) => res.json({ healthy: mass.getHealth() }));
 router.post('/health/reset', (req, res) => { mass.resetHealth(); res.json({ success: true }); });
 
-module.exports = router;
+module.exports = router; 

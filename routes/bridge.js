@@ -20,7 +20,10 @@ router.use((req, res, next) => {
     }
 
     const ip = (req.ip || req.connection.remoteAddress).replace('::ffff:', '');
-    console.log(`[Bridge] 🔍 Action: ${req.method} ${req.url} from ${ip}`);
+	// Only print Bridge HTTP traffic if user enabled Verbose Logging
+    if (global.DEBUG_MODE) {
+        console.log(`[Bridge] 🔍 Action: ${req.method} ${req.url} from ${ip}`);
+    }
     next();
 });
 
@@ -76,4 +79,4 @@ router.get('/preset/:id.mp3', async (req, res) => {
 
 });
 
-module.exports = router;
+module.exports = router; 

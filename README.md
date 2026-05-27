@@ -1,21 +1,15 @@
-# TJGigs is "OUT_OF-OFFICE" MAY 9Th-26 (will be back soon!)  WILL WORK ON AND SOLVE ALL ISSUES WHEN I GET BACK! THanks for your Patience!
-# ***Special note:***
-Unfortunately, I will be on vacation for 2 weeks (May 9th-26) with very limited access and just my iPhone 13 mini. So please be patient. You and this app are very important to me. I built this app just for me because I was so pisseed off at Bose. And then decide to share it and try to keep making it better. So I want to address any and all issues but without my computer and the fact my wife would not appreciate me doing “production support” while on vacation, my responses and debugging etc. will be delayed. Thanks for your patience. BTW if you are in Greece and want to meet for coffee I would be down…😊  (It’s a Rick Steve’s Tour)
+# V3.4 Quick Notes: 
+* 🔊 Addresses most of the known bugs including issue 20
+* 🔊 Includes a complete revamp of the Bose cloud emulation inject sequence. It is now completely automated (does not require USB Hijack)
+* 🔊 Bose Cloud (Hybrid) has been simplified and is more stable. Prior heavy lifting moved to new Pre-Flight module
 
-# ***ALSO Another Note: 
-Unless you are part of debugging efforts for your issue #20 or you are new and get issue #20 please make sure u do Not change your docker yml from v3.  (do not put in latest, or v3.1 or v3.2 or v3.3) these are debug version used to research issues)***
+## Future Releases and Timing:
+* 📅 V3.5 address remaining new or old bugs (hopefully in another week)
+* 📅 V4 Enhancements target mid-June
 
-***if u have issue 20 scroll through the issue thread #20 for the tenp solution to the issue written up by others with sane issue***
+### ***BTW: You can see status of issues, discussions and timings using the list labels filters.***
 
-
-***Ill implement permanent fix when I return.  thx***
-
-***The latest debug logging version is v3.3***
-
-
-
-
-# <img src="public/images/hybrid_icon.png" width="30"> Bose SoundTouch Hybrid 2026 - V3
+# <img src="public/images/hybrid_icon.png" width="30"> Bose SoundTouch Hybrid 2026 - V3.4
 
 **A free, open-source private cloud streaming service replacing the Bose Cloud Service to maintain 100% of the smart speaker functionality of your SoundTouch 10, 20, & 30 Speakers and Wireless Link. Physical Presets Included!**
 
@@ -167,7 +161,7 @@ Before proceeding with the instructions below, please do the following:
 
 6. **Install the Web App:** Open your mobile browser and navigate to the SoundTouch Hybrid local web address (e.g., http://<YOUR_SERVER_IP>:3000/control.html). Tap **"Add to Home Screen"** to install it as a native-feeling app with a launch icon.
 
-7. **Redirect SoundTouch Speakers to Your Local Cloud:** The final configuration step is to redirect your physical speakers away from the decommissed Bose SoundTouch Servers and route them to the SoundTouch Hybrid's Bose Cloud replacement emulator. Open the Speaker Admin/System Tools page and follow the on-screen **"Bose Cloud Emulation Setup"** instructions to prepare a USB drive and inject the configuration override (`OverrideSdkPrivateCfg.xml`) into each of your speakers.
+7. **Redirect SoundTouch Speakers to Your Local Cloud:** In v3.4 the happens automatically (no more USB hijack) and is noted in the Pre-Flight console logs.
 
 8. **Demo Video Reviews:**
    *  **Initial V1 Core Functionality: 📺[Bose SoundTouch Hybrid 2026](https://www.youtube.com/watch?v=R6mbTRBEBYA)** 
@@ -186,3 +180,4 @@ Before proceeding with the instructions below, please do the following:
 * **The Bose Wiki (App Alternatives):** A community-maintained list of current workarounds and projects. [Bose Alternatives Wiki](https://bose.fandom.com/wiki/SoundTouch_app_alternatives).
 * **[GitHub Soundcork-repo](https://github.com/deborahgu/soundcork).**
 * **[GitHub Ueberboese-repo](https://github.com/julius-d/ueberboese-api).**
+ 

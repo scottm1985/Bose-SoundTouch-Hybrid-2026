@@ -11,6 +11,7 @@ const utils = require('./routes/utils');
 // --- NEW STATE ENGINE ---
 const NATIVE_CACHE = {};   // Holds raw data pushed by WebSocket
 const FINAL_STATE = {};    // Holds fully processed data (after MASS overrides and scrubbing)
+const POISONED_DEVICES = {}; // Track bad metadata log suppression states per IP
 const DEBOUNCE_TIMERS = {};
 const DEBOUNCE_DELAY_MS = 500; // The "Anti-Flicker" window
 const LAST_VALID_STATE = {};
@@ -21,18 +22,16 @@ const STOP_TIMERS = {}; // Replaces STOP_COUNTS for WebSocket time
 const EXPECTATIONS = {}; // Tracks active UI Locks
 const TRACK_TIME_ANCHOR = {}; // Fixes Bose gapless time accumulation
 const WAKE_MEMORY = {}; // App Mem for Behavior 4
-const AUTO_RESUME_PRESET = process.env.AUTO_RESUME_PRESET !== 'false'; //if not false fallback is true
+const AUTO_RESUME_TIMERS = {}; // Tracks timers thy can be cancelled if interrupted
+// Strict evaluation: Feature is disabled (false) by default. 
+// It only activates (true) if AUTO_RESUME_PRESET=true is explicitly defined in the .env file.
+const AUTO_RESUME_PRESET = typeof process.env.AUTO_RESUME_PRESET === 'string' && process.env.AUTO_RESUME_PRESET.trim().toLowerCase() === 'true';
 
 // BAD_META: List of keywords indicating the speaker is not playing real content.
 const BAD_META = ["MUSIC ASSISTANT", "READY", "OBJECT", "LOADING...", "", "AIRPLAY", "UNKNOWN", "STOPPED", "STANDBY", "UPNP", "INVALID_SOURCE", "NULL"];
 
 // --- HELPERS (UNTOUCHED) ---
 const isBadMeta = (t) => !t || BAD_META.includes(t.toUpperCase());
-
-function scrubText(str) {
-    if (!str) return "";
-    return str.replace(/\ufffd/g, 'a').normalize('NFC');
-}
 
 function cleanContentItem(raw, playStatus) {
     if (!raw) return { source: "Ready" };
@@ -100,6 +99,12 @@ function resolveMetadataAndStatus(nativeData, massData, source, isPausedByShadow
             // ONLY use MASS state to override a STOP_STATE to mask gapless track loading.
             if (finalStatus === 'STOP_STATE' && massData.state === 'playing') {
                 finalStatus = 'PLAY_STATE';
+            } else if (finalStatus === 'PLAY_STATE' && massData.state === 'paused' && POISONED_DEVICES[deviceIp]) {
+                        // 🛑 THE RESUME FIX (ISSUE #56) - POISON EDGE CASE ONLY
+                        // If the socket crashed due to bad metadata, it stops pushing XML updates, 
+                        // leaving the native cache permanently stuck on PLAY_STATE.
+                        // In this rare edge case, MUST trust MASS's explicit 'paused' state to prevent infinite Play/Pause loops!
+                        finalStatus = 'PAUSE_STATE';				
             }
         }
         if (massData.item && massData.item.media_type) finalMediaType = massData.item.media_type;
@@ -166,15 +171,29 @@ function handleWakeMemory(ip, isStandby, activePreset, finalPlayStatus) {
             const presetId = WAKE_MEMORY[ip];
             console.log(`\n[DeviceState] 🌅 Auto-Resume Enabled: Waking up ${ip}. Resuming Preset ${presetId}...`);
             
-            // Wait 2 seconds for the speaker's network stack to fully settle
-            setTimeout(async () => {
+            // Clear any old pending timers
+            if (AUTO_RESUME_TIMERS[ip]) clearTimeout(AUTO_RESUME_TIMERS[ip]);
+
+            // Wait 2.5 seconds for the speaker's network stack to fully settle
+            AUTO_RESUME_TIMERS[ip] = setTimeout(async () => {
+                
+                // --- THE FIX (ISSUE #55) ---
+                // If user physically pressed preset to turn the speaker ON,
+                // bridge will have updated the preset memory timestamp within the last few seconds.
+                // SO bypass auto-resume so not to interrupt the new selection
+                const mem = mass.getPresetMemory(ip);
+                if (mem && (Date.now() - mem.timestamp < 5000)) {
+                    console.log(`[DeviceState] 🛑 Auto-Resume Bypassed: User woke speaker via Preset ${mem.id}.`);
+                    return; 
+                }
+
                 try {
                     await axios.post(`http://${ip}:8090/key`, `<key state="press" sender="Gabbo">PRESET_${presetId}</key>`);
                     await axios.post(`http://${ip}:8090/key`, `<key state="release" sender="Gabbo">PRESET_${presetId}</key>`);
                 } catch(e) {
                     console.log(`[DeviceState] ⚠️ Failed to auto-resume preset for ${ip}`);
                 }
-            }, 2000);
+            }, 2500);
         }
     }
 }
@@ -240,10 +259,10 @@ async function initDevice(device) {
         NATIVE_CACHE[device.ip] = { device: device, playStatus: 'STOP_STATE', volume: 0, nowPlaying: {} };
         FINAL_STATE[device.ip] = { ...device, online: true, readyForDisplay: true };
     }
-
-    // --- NEW: Exponential Backoff State ---
+    // --- Exponential Backoff State ---
     let reconnectDelay = 5000;
     let failedAttempts = 0;
+	let isPoisoned = false; // Tracks if the current track contains socket-killing bytes
 
     // Wrap the connection logic so it can restart itself
     async function fetchInitialAndConnect() {
@@ -282,16 +301,17 @@ async function initDevice(device) {
         await processSettledState(device.ip);
         console.log = originalLog; // Restore logs
 
-        // 4. Start the WebSocket Listener
+		// 4. Start the WebSocket Listener
         const ws = new WebSocket(`ws://${device.ip}:8080`, 'gabbo');
-
+		
         ws.on('open', () => {
-            if (failedAttempts > 0) {
+            if (failedAttempts > 0 && !POISONED_DEVICES[device.ip]) {
                 console.log(`[DeviceState] 🔌 WS Reconnected to ${device.ip}! Resuming normal operations.`);
             }
-            // Reset the timers when successfully connected
-            reconnectDelay = 5000;
-            failedAttempts = 0;
+            if (!POISONED_DEVICES[device.ip]) {
+                reconnectDelay = 5000;
+                failedAttempts = 0;
+            }
         });
 
         ws.on('message', async (data) => {
@@ -299,12 +319,13 @@ async function initDevice(device) {
                 // 1. Convert the raw WebSocket buffer to a string first
                 let rawXml = data.toString('utf8');
                 
-                // --- 🚨 THE UNFILTERED RAW WEBSOCKET LOGGER 🚨 ---
+				// --- 🚨 THE UNFILTERED RAW WEBSOCKET LOGGER 🚨 ---
                 // prints everything before the code can filter it out
-                /* console.log(`\n[RAW WS DUMP] 📥 from ${device.ip}:`);
-                console.log(rawXml);
-                console.log(`--------------------------------------\n`);
-                */
+                if (global.DEBUG_MODE) {
+                    console.log(`\n[RAW WS DUMP] 📥 from ${device.ip}:`);
+                    console.log(rawXml);
+                    console.log(`--------------------------------------\n`);
+                }
 
                 // 2. THE PRE-SCRUBBER: Sanitize the raw XML before parsing
                 rawXml = rawXml.replace(/\ufffd/g, 'a').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
@@ -340,40 +361,48 @@ async function initDevice(device) {
                 console.log(`[DeviceState] ⚠️ XML Parsing Error on ${device.ip}: ${err.message}`);
             }
         });
-
+	
 		ws.on('error', (err) => {
             // --- THE SILENCER ---
-            // Acknowledge protocol-level crash, but don't treat it as a hard failure.
+            // Catch protocol-level crashes from bad metadata bytes without hard failure loops
             if (err.message.includes('UTF-8')) {
-                console.log(`[DeviceState] 🧽 Bad metadata from ${device.ip} broke the socket. Auto-recovering via HTTP...`);
-                return; // Ignore and let the auto-reconnect handle it cleanly!
+                if (!POISONED_DEVICES[device.ip]) {
+                    console.log(`[DeviceState] 🧽 Bad metadata from ${device.ip} broke the socket.`);
+                    console.log(`[DeviceState] 🔇 Muting socket loop logs until Gapless Watchdog catches a clean track change...`);
+                    POISONED_DEVICES[device.ip] = true;
+                }
+                reconnectDelay = 5000; // Background pings stay active quietly
+                return; // Suppress error propagation
             }
             
             failedAttempts++;
             
-            // --- THE MISSING 'IF' STATEMENT IS RESTORED HERE ---
-            if (failedAttempts < 3) {
+            if (failedAttempts < 3 && !POISONED_DEVICES[device.ip]) {
                 console.log(`[DeviceState] ⚠️ WS Error on ${device.ip}: ${err.message}`);
             } else if (failedAttempts === 3) {
-                console.log(`[DeviceState] 🔇 Speaker ${device.ip} is unreachable. Suppressing WS logs until it wakes up.`);
+                if (!POISONED_DEVICES[device.ip]) {
+                    console.log(`[DeviceState] 🔇 Speaker ${device.ip} is unreachable. Suppressing WS logs until it wakes up.`);
+                }
                 // flag it as offline so UI grays it out
                 if (FINAL_STATE[device.ip]) FINAL_STATE[device.ip].online = false;
             }
         });
-
-        // --- AUTO-RECONNECT LOOP ---
+	
+		// --- AUTO-RECONNECT LOOP ---
         ws.on('close', () => {
-            if (failedAttempts < 3) {
+            // Use unified dictionary to muzzle log spam when a device is marked poisoned
+            if (failedAttempts < 3 && !POISONED_DEVICES[device.ip]) {
                 console.log(`[DeviceState] 🔌 WS Disconnected from ${device.ip}. Reconnecting in ${reconnectDelay / 1000}s...`);
             }
             
             setTimeout(fetchInitialAndConnect, reconnectDelay);
             
-            // THE SNOOZE: Double the delay each time it fails, capping at 60 seconds
-            if (reconnectDelay < 60000) {
+            // Exponential backoff: Cap at 60s delay unless the poison shield has actively forced a 30s pause
+            if (reconnectDelay < 60000 && !POISONED_DEVICES[device.ip]) {
                 reconnectDelay = Math.min(reconnectDelay * 2, 60000);
             }
         });
+		
     }
 
     // Start the engine
@@ -461,7 +490,9 @@ async function processSettledState(ip) {
             mass.setPresetMemory(ip, 0);
             delete LAST_METADATA[ip];
             if (LAST_VALID_STATE[ip] && LAST_VALID_STATE[ip].isStandby === false) {
+			// The 1-2 Punch: Stop the active stream, then clear MA queue completely 
                 mass.stop(ip).catch(() => {});
+                mass.clearQueue(ip).catch(() => {});
             }
 
             finalPlayStatus = 'STOP_STATE'; // Forces play button to gray
@@ -780,25 +811,40 @@ module.exports = {
 };
  
 // =================================================================
-// --- THE GAPLESS WATCHDOG ---
+// --- THE GAPLESS WATCHDOG & LOG UNMUTER ---
 // Bose WebSockets go completely silent during gapless UPnP streams.
 // This ultra-lightweight loop pings Music Assistant directly every 2.5 seconds
-// to catch track changes instantly without hammering the Bose hardware!
+// to catch track changes instantly without hammering the Bose speakers
 // =================================================================
 setInterval(async () => {
     for (const [ip, state] of Object.entries(FINAL_STATE)) {
+        
+        // --- VIRTUAL WEBSOCKET FOR POISONED DEVICES ---
+        // If the socket crashed, the speaker stops pushing XML events.
+        // force a poll to catch Pause/Play clicks and clear UI locks!
+        if (POISONED_DEVICES[ip]) {
+            await processSettledState(ip);
+        }
+
         // Only check if it's actively playing, driven by MASS, and NOT locked by a user click
         if (state && state.playStatus === 'PLAY_STATE' && state.massIsActiveDriver && !EXPECTATIONS[ip]) {
             try {
                 const maData = await mass.getRawMetadata(ip);
                 if (maData && maData.item) {
                     const meta = maData.meta || maData.item.metadata || {};
-                    let newTrack = scrubText(meta.name || maData.item.name || "");
+                    let newTrack = utils.scrubText(meta.name || maData.item.name || "");
                     
                     // If MASS reports a new track that isn't the dummy name, trigger an update!
                     if (newTrack && newTrack !== state.track && newTrack !== "Music Assistant") {
                         console.log(`\n[DeviceState] 🐕 Gapless Watchdog caught track change on ${ip}: ${state.track} -> ${newTrack}`);
                         
+                        // --- THE RESET & UNMUTE ---
+                        // Track advanced! Clear poison suppression state to unlock socket logs
+                        if (POISONED_DEVICES[ip]) {
+                            console.log(`[DeviceState] 🔓 Clean track signature detected. Re-activating WebSocket log stream for ${ip}.`);
+                            delete POISONED_DEVICES[ip];
+                        }
+
                         // Force the engine to update the UI instantly
                         await processSettledState(ip);
                     }
@@ -808,4 +854,4 @@ setInterval(async () => {
             }
         }
     }
-}, 2500);	
+}, 2500); 

@@ -5,6 +5,8 @@ const xml2js = require('xml2js');
 const net = require('net'); 
 const BOSE_HEADERS = { headers: { 'Content-Type': 'application/xml' } };
 const mass = require('./mass');
+const fs = require('fs');      
+const path = require('path');  
 
 router.get('/admin/device_status', async (req, res) => {
     const { ip } = req.query;
@@ -220,97 +222,6 @@ router.post('/admin/reboot_speaker', (req, res) => {
     res.send({ success: true });
 });
 
-// --- SMART INJECT CLOUD CONFIGURATION ---
-router.post('/admin/inject_cloud', async (req, res) => {
-    const { ip, script } = req.body;
-    console.log(`[Admin] Bose Cloud Independence Sequence started for ${ip}...`);
-
-    try {
-        // TELNET INJECTION ONLY (The Cloud Hijack)
-        const client = new net.Socket();
-        client.on('error', (err) => {
-            console.log(`[Admin] Telnet Error: ${err.message}`);
-            if (!res.headersSent) res.status(500).send({ error: "Telnet refused. Is the USB stick with 'remote_services' inserted?" });
-        });
-
-        client.connect(23, ip, () => {
-            console.log(`[Admin] 1. Connected to Telnet. Sending override XML...`);
-            setTimeout(() => {
-                client.write('root\r\n'); // Log in
-                
-                setTimeout(() => {
-                    // Inject the Override XML script, and force a disk sync
-                    const payload = script.replace(/\r\n/g, '\n') + '\n\nsync\n';
-                    client.write(payload);
-                    
-                    console.log(`[Admin] 2. Script sent. Waiting 10 seconds for the speaker to process and save...`);
-                    
-                    // Give the CPU 10 seconds to process the text dump and save to NVRAM
-                    setTimeout(() => {
-                        console.log(`[Admin] 3. Save complete. Sending beep and rebooting...`);                    
-                        
-                        // Send the audio notification / beep command right before it goes down
-                        axios.get(`http://${ip}:8090/playNotification`).catch(() => {});
-                        client.write('reboot\r\n'); // Reboot speaker
-                        
-                        setTimeout(() => {
-                            client.destroy();
-                            if (!res.headersSent) res.send({ success: true });
-                        }, 500);
-                        
-                    }, 10000); // 10-second delay for saving
-                }, 1000);
-            }, 500);
-        });
-
-    } catch (e) {
-        console.log(`[Admin] Injection Error: ${e.message}`);
-        if (!res.headersSent) res.status(500).send({ error: e.message });
-    }
-});
-
-// --- REMOVE CLOUD CONFIGURATION VIA TELNET (PORT 23) ---
-router.post('/admin/remove_cloud', (req, res) => {
-    const { ip } = req.body;
-    console.log(`[Admin] Removing Cloud Config from ${ip} via Telnet (Port 23)...`);
-
-    const client = new net.Socket();
-
-    client.on('error', (err) => {
-        console.log(`[Admin] Telnet Port 23 Error on ${ip}: ${err.message}`);
-        if (!res.headersSent) res.status(500).send({ error: "Connection refused. Ensure the USB stick with 'remote_services' is inserted." });
-    });
-
-    client.connect(23, ip, () => {
-        console.log(`[Admin] Connected to ${ip}:23. Sending 'root' login...`);
-        
-        setTimeout(() => {
-            client.write('root\r\n');
-            
-            setTimeout(() => {
-                console.log(`[Admin] Deleting Override XML...`);
-                // Delete the file and immediately force a disk sync
-                client.write('rm /var/lib/Bose/PersistenceDataRoot/OverrideSdkPrivateCfg.xml\r\nsync\r\n');
-                
-                // Give it 2 seconds to delete and sync
-                setTimeout(() => {
-                    console.log(`[Admin] Override deleted. Sending beep and rebooting...`);
-                    
-                    // Send the audio notification / beep command right before it goes down
-                    axios.get(`http://${ip}:8090/playNotification`).catch(() => {});
-                    
-                    client.write('reboot\r\n'); // Reboot speaker
-                    
-                    setTimeout(() => {
-                        client.destroy();
-                        if (!res.headersSent) res.send({ success: true });
-                    }, 500);
-                }, 2000); 
-            }, 1000);
-        }, 500);
-    });
-});
-
 // --- UNIFIED WI-FI PROVISIONING ---
 router.post('/admin/set_wifi', async (req, res) => {
     const { ip, ssid, password } = req.body;
@@ -408,7 +319,7 @@ router.post('/admin/set_wifi', async (req, res) => {
 
 // --- RESTART SOUNDTOUCH HYBRID ---
 router.post('/admin/restart_hybrid', (req, res) => {
-    console.log(`[Admin] Hybrid App restart requested via Web UI.`);
+    console.log(`\n[Admin] 🔄 SoundTouch Hybrid App restart requested via Web UI (Standard).`);
     res.send({ success: true });
     
     // Wait 1 second to ensure the UI gets the 'success' response, then kill the process.
@@ -425,5 +336,33 @@ router.post('/admin/toggle_debug', (req, res) => {
     console.log(`[Admin] Verbose Debug Mode set to: ${global.DEBUG_MODE ? 'ON' : 'OFF'}`);
     res.send({ success: true, debug: global.DEBUG_MODE });
 });
+// --- GET CURRENT DEBUG STATE ---
+router.get('/admin/debug_state', (req, res) => {
+    res.json({ debug: global.DEBUG_MODE === true });
+});
+// --- FORCE NVRAM INJECTION ---
+router.post('/admin/force_injection', (req, res) => {
+    const targetIp = req.body.target || 'all';
+    
+    console.log(`\n=======================================================================`);
+    console.log(`🚨 SOUNDTOUCH HYBRID RESTART REQUESTED WITH FORCE NVRAM INJECTION`);
+    console.log(`🎯 Target: ${targetIp === 'all' ? 'ALL SPEAKERS' : targetIp}`);
+    console.log(`=======================================================================`);
+    
+    // 1. Write a temporary flag file to the mapped config folder
+    const flagPath = path.join(process.cwd(), 'config', 'force_inject.json');
+    fs.writeFileSync(flagPath, JSON.stringify({ forceMode: true, targetIp: targetIp }));
+
+    // 2. Release the UI immediately
+    res.json({ success: true, message: "Flag set. Restarting Hybrid container..." });
+
+    // 3. Kill the process so Docker restarts it and triggers the boot sequence
+    setTimeout(() => {
+        console.log(`[Admin] Exiting process to apply force injection...`);
+        process.exit(0); 
+    }, 1000);
+});
 
 module.exports = router;
+
+ 
