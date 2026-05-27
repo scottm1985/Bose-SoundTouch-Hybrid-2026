@@ -334,6 +334,43 @@ async function initDevice(device) {
                 const parser = new xml2js.Parser({ explicitArray: false });
                 const result = await parser.parseStringPromise(rawXml);
 
+                // =========================================================
+                // --- PHYSICAL REMOTE SKIP RESCUE ---
+                // The speaker's native QPlay engine cannot skip a Music
+                // Assistant playlist (it sees one continuous radio stream).
+                // When the user presses Next/Prev on the physical remote,
+                // the skip fails on the hardware and the speaker broadcasts
+                // a <errorUpdate> frame. We catch it here and perform the
+                // skip in Music Assistant instead, so the remote works.
+                // =========================================================
+                if (result.errorUpdate && result.errorUpdate.error) {
+                    const err = result.errorUpdate.error;
+                    const errName = err.$ ? err.$.name : err.name;
+                    const errValue = err.$ ? err.$.value : err.value;
+
+                    const isSkipNext = (errName === 'QPLAY_SKIP_NEXT_FAILED' || String(errValue) === '4301');
+                    const isSkipPrev = (errName === 'QPLAY_SKIP_PREV_FAILED' || String(errValue) === '4302');
+
+                    if (isSkipNext || isSkipPrev) {
+                        const state = FINAL_STATE[device.ip];
+                        // Only rescue when Music Assistant is actually the driver.
+                        // A skip failure on genuine native content is left alone.
+                        if (state && state.massIsActiveDriver) {
+                            const action = isSkipNext ? 'Next' : 'Previous';
+                            console.log(`[DeviceState] 📟 Physical remote ${action} failed natively on ${device.ip}. Redirecting to Music Assistant...`);
+                            try {
+                                if (isSkipNext) await mass.next(device.ip);
+                                else await mass.previous(device.ip);
+                            } catch (e) {
+                                console.log(`[DeviceState] ⚠️ MASS ${action} rescue failed for ${device.ip}: ${e.message}`);
+                            }
+                        } else {
+                            console.log(`[DeviceState] 📟 Ignoring native skip failure on ${device.ip} (not a Music Assistant source).`);
+                        }
+                    }
+                    return; // errorUpdate frames carry no state to process
+                }
+
                 // If it's not a standard update, we still return
                 if (!result.updates) return;
 
